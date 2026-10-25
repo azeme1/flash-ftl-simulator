@@ -124,7 +124,7 @@ def test_gc_victim_selection_is_greedy(gc_order, reference_runs):
 def test_write_amplification_regression(reference_runs):
     """Pins the write amplification of the gc_order="lba" reference run, so any change to GC behavior is
     noticed. Update the expected value deliberately when the GC policy changes."""
-    assert write_amplification(reference_runs["lba"].ftl) == pytest.approx(2.9596, abs=1e-4)
+    assert write_amplification(reference_runs["lba"].ftl) == pytest.approx(3.0276, abs=1e-4)
 
 
 # --- L2P entropy ---
@@ -144,7 +144,7 @@ def test_l2p_entropy_after_random_writes_is_in_range(gc_order, reference_runs):
 def test_l2p_entropy_regression(reference_runs):
     """Pins the L2P entropy of the gc_order="lba" reference run, so any change to GC page placement is
     noticed. Update the expected value deliberately when the GC policy changes."""
-    assert reference_runs["lba"].ftl.l2p_entropy == pytest.approx(3.0738, abs=1e-4)
+    assert reference_runs["lba"].ftl.l2p_entropy == pytest.approx(3.0956, abs=1e-4)
 
 
 def test_lba_gc_order_gives_lowest_l2p_entropy(reference_runs):

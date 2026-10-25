@@ -107,7 +107,7 @@ class FTL:
         return encode_address(self.open_block_index, self.page_index)
 
     def erase_block(self, block_index):
-        assert np.all(self.P2L[block_index] == PAGE_INVALID)
+        assert np.all(self.P2L[block_index] < 0)  # invalid, or never written in a partly filled GC block
         self.P2L[block_index, ...] = PAGE_EMPTY
         self.block_erase_counter[block_index] += 1
         self.block_status[block_index] = EMPTY_BLOCK
@@ -172,11 +172,9 @@ class FTL:
         # min_gc_block_count = 1 + np.where(np.cumsum(invalid_pages) > self.pages_per_block)[0].min()
         # gc_move_block_list = gc_block_indexes[:min_gc_block_count]
 
-        # Write block strategy
-        pages_to_move = clean_blocks * self.pages_per_block
-        _valid_pages = self.block_valid_pages[gc_block_indexes]
-        min_gc_block_count = 1 + np.where(np.cumsum(_valid_pages) > pages_to_move)[0].min()
-        gc_move_block_list = gc_block_indexes[:min_gc_block_count]
+        # Victims: the clean_blocks greedy blocks among the monitor_blocks candidates. All their valid pages
+        # are copied; they fit, because GC starts with at least clean_blocks empty blocks
+        gc_move_block_list = gc_block_indexes[:self.monitor_blocks][:clean_blocks]
         self.gc_source_blocks = gc_move_block_list
 
         # Victims without valid pages need no relocation: free them right away
@@ -193,19 +191,14 @@ class FTL:
             pages_src += np.where(_selection)[0].tolist()
             blocks_src += [_block_index] * sum(_selection)
 
-        assert len(pages_src) >= pages_to_move, "Not enough pages for GC"
+        pages_dst = np.arange(self.pages_per_block)
 
-        pages_dst = np.array(range(pages_to_move))
-
-        lba_items = lba_items[:pages_to_move]
-        pages_src = pages_src[:pages_to_move]
-        blocks_src = blocks_src[:pages_to_move]
-        pages_dst = pages_dst[:pages_to_move]
-
+        # Precomputed destination order: one chunk of page_order per destination block, the last may be partial
         page_order = self.gc_page_order(lba_items)
-        page_order = page_order.reshape(clean_blocks, self.pages_per_block)
+        page_order = [page_order[s:s + self.pages_per_block] for s in range(0, len(page_order), self.pages_per_block)]
+        assert len(page_order) <= (self.block_status == EMPTY_BLOCK).sum(), "Not enough empty blocks for GC"
 
-        for _block, _order in zip(range(clean_blocks), page_order):
+        for _order in page_order:
             self.open_gc_block()    
             _block_dst = self.gc_block_index
             for k, i in enumerate(_order):
@@ -240,7 +233,7 @@ class FTL:
 
             self.block_status[_block_dst] = CLOSED_BLOCK
 
-            assert np.all(self.P2L[_block_dst, ...] >= 0)
+            assert np.all(self.P2L[_block_dst, :len(_order)] >= 0)
 
         self.gc_source_blocks = []
         logger.debug("Done GC")
