@@ -1,7 +1,5 @@
 import numpy as np
 
-import cv2
-import os
 import logging
 from parameters import decode_address, encode_address
 
@@ -9,18 +7,12 @@ from parameters import decode_address, encode_address
 PAGE_INVALID = -1
 PAGE_EMPTY = -2
 
-PAGE_EMPTY_COLOR = (128, 128, 128)
-PAGE_INVALID_COLOR = (0, 0, 255)
-PAGE_LBA_COLOR = (0, 255, 0)
-OPEN_BLOCK_COLOR = (0, 255, 255)
-
 LBA_EMPTY = -1
 
 EMPTY_BLOCK = -1
 OPENED_BLOCK = 0
 CLOSED_BLOCK = 1
 GC_BLOCK = 2
-FTL_SNAPSHOT_FOLDER = "__dev/snapshots/"
 MAX_GC_BLOCKS = 15
 
 
@@ -66,9 +58,8 @@ class FTL:
         self.write_lba = 0
         self.write_storage = 0
 
-        # Visualization section
-        self.image_counter = 0
-        self.image_template = np.full((self.block_count_total, self.pages_per_block, 3), np.nan, dtype=np.float32)
+        # Visualization hook: called as on_page_write(ftl) after every host page write
+        self.on_page_write = None
 
     def open_block(self):
         self.open_block_index = np.where(self.block_status == EMPTY_BLOCK)[0].min()
@@ -130,6 +121,9 @@ class FTL:
 
             self.write_lba += 1
             self.write_storage += 1
+
+            if self.on_page_write is not None:
+                self.on_page_write(self)
 
     def gc(self, clean_blocks=MAX_GC_BLOCKS):
         closed_blocks = np.where(self.block_status == CLOSED_BLOCK)[0]
@@ -242,21 +236,3 @@ class FTL:
         H = shannon_entropy(deltas, bins=2**16)
         logger.info(f"L2P entropy: {H:.4f} bits/entry ({H / 16:.4f} of raw)")
         return H
-
-    def to_image(self, repeat_period=5):
-        snapshot = self.image_template.copy()
-
-        snapshot[self.P2L == PAGE_EMPTY, ...] = PAGE_EMPTY_COLOR
-        if self.open_block_index is not None:
-            snapshot[self.open_block_index, ...] = OPEN_BLOCK_COLOR
-        snapshot[self.P2L == PAGE_INVALID, ...] = PAGE_INVALID_COLOR
-        snapshot[self.P2L >= 0, ...] = PAGE_LBA_COLOR
-
-        assert ~np.any(np.isnan(snapshot)), "Color mapping issue"
-        assert ~np.any(snapshot < 0), "Color mapping issue"
-
-        snapshot_path = os.path.join(FTL_SNAPSHOT_FOLDER, str(self.image_counter).zfill(repeat_period) + ".png")
-        os.makedirs(os.path.dirname(snapshot_path), exist_ok=True)
-        cv2.imwrite(snapshot_path, snapshot.astype(np.uint8))
-
-        self.image_counter += 1
