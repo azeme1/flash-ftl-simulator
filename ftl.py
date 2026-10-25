@@ -218,12 +218,32 @@ class FTL:
         self.gc_source_blocks = []
         logger.debug("Done GC")
 
-    def check(self):
+    def check(self, l2p=True, p2l=True, valid_pages=True):
+        if l2p:
+            self.check_l2p()
+        if p2l:
+            self.check_p2l()
+        if valid_pages:
+            self.check_valid_pages()
+        logger.debug("Done Check")
+
+    def check_l2p(self):
+        """Every mapped LBA points to a physical page that holds it."""
         for _lba, _address in enumerate(self.L2P):
             if _address >= 0:
                 _block, _page = decode_address(_address)
-                assert self.P2L[_block, _page] == _lba
-        logger.debug("Done Check")
+                assert self.P2L[_block, _page] == _lba, f"L2P entry of LBA {_lba} points to a wrong page"
+
+    def check_p2l(self):
+        """Every valid physical page is the current location of its LBA
+        (this also catches an LBA stored as valid in two places)."""
+        _blocks, _pages = np.nonzero(self.P2L >= 0)
+        _lbas = self.P2L[_blocks, _pages]
+        assert np.all(self.L2P[_lbas] == (_blocks << PAGE_BITS) | _pages), "P2L page not referenced by L2P"
+
+    def check_valid_pages(self):
+        """Per-block valid page counters match the P2L content."""
+        assert np.all((self.P2L >= 0).sum(axis=1) == self.block_valid_pages), "Wrong block_valid_pages"
 
     def log_wa(self):
         if self.write_lba == 0:
