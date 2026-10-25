@@ -102,6 +102,33 @@ def test_invalid_gc_order_is_rejected():
         FTL(SLC_SMALL, gc_order="bogus")
 
 
+# --- write ---
+
+@pytest.mark.parametrize("request_for", [
+    lambda pages: (-1, 1),         # negative LBA, used to wrap silently to the last LBA
+    lambda pages: (-2, 4),         # chunk starting before LBA 0
+    lambda pages: (pages - 2, 4),  # chunk crossing the end, used to write 2 pages, then raise IndexError
+    lambda pages: (pages, 1),      # first LBA past the end
+], ids=["negative", "starts-before-0", "crosses-end", "past-end"])
+def test_write_rejects_lbas_outside_the_device(request_for):
+    """A write touching any LBA outside 0..page_count_logical-1 is rejected before anything is written."""
+    ftl = make_ftl()
+    lba, chunk_size = request_for(ftl.page_count_logical)
+    with pytest.raises(AssertionError, match="outside the device"):
+        ftl.write(lba, chunk_size)
+    assert ftl.write_lba == 0
+    assert np.all(ftl.L2P == -1)
+
+
+def test_write_accepts_the_full_lba_range():
+    """The first and last LBAs, and a chunk ending exactly at the end of the device, are valid writes."""
+    ftl = make_ftl()
+    ftl.write(0, 1)
+    ftl.write(ftl.page_count_logical - 4, 4)
+    assert ftl.write_lba == 5
+    ftl.check()
+
+
 # --- erase_block_if_possible ---
 
 def test_erase_block_if_possible():

@@ -118,6 +118,9 @@ class FTL:
         return True
 
     def write(self, lba_index, chuck_size):
+        # Validate the whole chunk up front, so a bad request never leaves a write half done
+        assert 0 <= lba_index and lba_index + chuck_size <= self.page_count_logical, \
+            f"Write of LBAs [{lba_index}, {lba_index + chuck_size}) is outside the device (0..{self.page_count_logical - 1})"
         for _lba in range(lba_index, lba_index + chuck_size):
             if (self.block_status == EMPTY_BLOCK).sum() < self.min_empty_blocks:
                 self.gc(MAX_GC_BLOCKS)
