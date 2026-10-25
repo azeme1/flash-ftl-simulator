@@ -58,7 +58,7 @@ affects later write amplification and how sequential the L2P table stays. Select
 
 | `gc_order` | GC writes the collected pages in order of |
 |---|---|
-| `source` | collection order: victim blocks (fewest valid pages first), pages in physical order |
+| `greedy` | baseline, collection order: victim blocks (fewest valid pages first), pages in physical order |
 | `lba` *(default)* | logical address, which keeps neighbouring LBAs together |
 | `address` | current physical address |
 | `block` | source block index |
@@ -72,7 +72,7 @@ Results for a sequential fill plus 3 random drive writes (1–16 page chunks, `n
 | `gc_order` | Write amplification | L2P entropy (bits/entry) | Erases per block, mean / std |
 |---|---|---|---|
 | `lba` | **4.498** | **4.16** | 15.88 / 3.22 |
-| `source` | 4.584 | 4.54 | 16.20 / 3.47 |
+| `greedy` | 4.584 | 4.54 | 16.20 / 3.47 |
 | `address` | 4.588 | 4.52 | 16.21 / 3.46 |
 | `block` | 4.588 | 4.52 | 16.21 / 3.46 |
 | `page` | 5.971 | 13.07 | 21.40 / 2.72 |

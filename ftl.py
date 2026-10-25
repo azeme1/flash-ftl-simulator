@@ -21,7 +21,7 @@ CLEAN_BLOCKS = 15    # destination blocks filled by one GC run, strictly fewer t
 
 # Order in which GC writes the collected valid pages into its destination blocks
 GC_ORDERS = (
-    "source",   # as collected: victim blocks (fewest valid pages first), pages in physical order
+    "greedy",   # baseline, as collected: victim blocks (fewest valid pages first), pages in physical order
     "lba",      # by logical address
     "address",  # by current physical address
     "block",    # by source block index
@@ -240,7 +240,7 @@ class FTL:
 
     def gc_page_order(self, lba_items):
         """Permutation of the collected pages, by the configured gc_order. Stable, so ties keep collection order."""
-        if self.gc_order == "source":
+        if self.gc_order == "greedy":
             return np.arange(len(lba_items))
         if self.gc_order == "lba":
             keys = np.asarray(lba_items)
