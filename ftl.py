@@ -16,7 +16,8 @@ EMPTY_BLOCK = -1
 OPENED_BLOCK = 0
 CLOSED_BLOCK = 1
 GC_BLOCK = 2
-MAX_GC_BLOCKS = 15
+MONITOR_BLOCKS = 16  # GC starts when fewer blocks than this are empty
+CLEAN_BLOCKS = 15    # destination blocks filled by one GC run, strictly fewer than MONITOR_BLOCKS
 
 # Order in which GC writes the collected valid pages into its destination blocks
 GC_ORDERS = (
@@ -42,10 +43,15 @@ def shannon_entropy(data: np.ndarray, bins: int = 256) -> float:
 
 
 class FTL:
-    def __init__(self, config, gc_order="lba"):
+    def __init__(self, config, gc_order="lba", monitor_blocks=MONITOR_BLOCKS, clean_blocks=CLEAN_BLOCKS):
         assert gc_order in GC_ORDERS, f"Unknown gc_order {gc_order!r}, expected one of {GC_ORDERS}"
+        # GC starts with at least monitor_blocks - 1 empty blocks, so it always has room for its destinations
+        assert 1 <= clean_blocks < monitor_blocks, \
+            f"Need 1 <= clean_blocks < monitor_blocks, got clean_blocks={clean_blocks}, monitor_blocks={monitor_blocks}"
         self.config = config
         self.gc_order = gc_order
+        self.monitor_blocks = monitor_blocks
+        self.clean_blocks = clean_blocks
         self.over_provisioning = 0.07
         self.block_count_total = config["total_blocks"]
         self.pages_per_block = config["pages_per_block"]
@@ -66,8 +72,6 @@ class FTL:
         self.gc_block_index = None
         self.gc_source_blocks = []  # blocks being collected by the running GC, empty outside GC
         self.page_index = None
-
-        self.min_empty_blocks = MAX_GC_BLOCKS + 1
 
         # Metrics
         self.write_lba = 0
@@ -122,8 +126,8 @@ class FTL:
         assert 0 <= lba_index and lba_index + chuck_size <= self.page_count_logical, \
             f"Write of LBAs [{lba_index}, {lba_index + chuck_size}) is outside the device (0..{self.page_count_logical - 1})"
         for _lba in range(lba_index, lba_index + chuck_size):
-            if (self.block_status == EMPTY_BLOCK).sum() < self.min_empty_blocks:
-                self.gc(MAX_GC_BLOCKS)
+            if (self.block_status == EMPTY_BLOCK).sum() < self.monitor_blocks:
+                self.gc()
                 # ftl.check()
 
             address_physical = self.new_physical_address()
@@ -150,14 +154,10 @@ class FTL:
             if self.on_page_write is not None:
                 self.on_page_write(self)
 
-    def gc(self, clean_blocks=MAX_GC_BLOCKS):
-        # GC opens all destination blocks before it erases any victim, so it cannot use more than are empty
-        empty_blocks = int((self.block_status == EMPTY_BLOCK).sum())
-        clean_blocks = min(clean_blocks, empty_blocks)
-        if clean_blocks == 0:
-            raise RuntimeError("Out of space: no empty block left for GC to relocate into")
-
+    def gc(self):
+        clean_blocks = self.clean_blocks
         closed_blocks = np.where(self.block_status == CLOSED_BLOCK)[0]
+
         for _block_index in closed_blocks:
             # print(_block_index, self.block_valid_pages[_block_index], (self.P2L[_block_index, :] >= 0).sum())
             assert (self.P2L[_block_index, :] >= 0).sum() == self.block_valid_pages[_block_index]
@@ -298,10 +298,14 @@ class FTL:
     def log_utilization(self):
         logger.info(f"Disk Ussage: {self.utilization}")
 
-    def log_entropy(self):
+    @property
+    def l2p_entropy(self):
         """Order-0 entropy of consecutive L2P deltas, in bits per L2P entry."""
         deltas = np.diff(self.L2P.astype(np.uint16))  # wraps mod 2**16, lossless
-        H = shannon_entropy(deltas, bins=2**16)
+        return shannon_entropy(deltas, bins=2**16)
+
+    def log_entropy(self):
+        H = self.l2p_entropy
         logger.info(f"L2P entropy: {H:.4f} bits/entry ({H / 16:.4f} of raw)")
         return H
 

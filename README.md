@@ -36,11 +36,11 @@ Host writes go to one open block, page by page. Overwriting an LBA marks its old
 
 ## Garbage collection
 
-GC starts when fewer than 16 blocks are empty. Each run:
+GC starts when fewer than `monitor_blocks` blocks are empty (default 16) and each run fills `clean_blocks`
+destination blocks (default 15). Both are `FTL` parameters, and `clean_blocks` must be strictly smaller than
+`monitor_blocks`, so GC always starts with at least as many empty blocks as it needs. Each run:
 
-1. **Sizing:** plans to fill 15 destination blocks, or fewer if fewer blocks are empty. GC opens its destination
-   blocks before the victims are all freed, so it never asks for more than exist. A run with no empty block at all
-   stops with an "Out of space" error.
+1. **Sizing:** relocates `clean_blocks` blocks' worth of valid pages.
 2. **Victim selection (greedy):** sorts closed blocks by valid page count, fewest first; blocks with equal
    counts are taken in block index order.
 3. **Collection:** takes valid pages from those victims until it has filled the planned destination blocks'

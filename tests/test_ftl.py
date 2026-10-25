@@ -1,4 +1,7 @@
-"""FTL tests: GC correctness and regressions, block erasure, and the mapping invariant checks."""
+"""FTL tests: greedy GC victim selection, L2P entropy, GC correctness and regressions, block erasure,
+and the mapping invariant checks."""
+
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -48,26 +51,109 @@ def write_amplification(ftl):
     return ftl.write_storage / ftl.write_lba
 
 
+def record_gc_victims(ftl):
+    """Wrap ftl.gc to record every GC run as (victim valid page counts, valid page counts of the closed
+    blocks GC left alone), both taken when the run starts."""
+    gc_runs = []
+    original_gc = ftl.gc
+
+    def recording_gc():
+        closed = np.where(ftl.block_status == CLOSED_BLOCK)[0]
+        valid = ftl.block_valid_pages[closed].copy()
+        victims = []
+        previous_hook = ftl.on_page_write
+
+        def hook(f):  # gc_source_blocks is set before GC moves its first page and cleared when it ends
+            if not victims:
+                victims.extend(int(b) for b in f.gc_source_blocks)
+            if previous_hook is not None:
+                previous_hook(f)
+
+        ftl.on_page_write = hook
+        try:
+            original_gc()
+        finally:
+            ftl.on_page_write = previous_hook
+        chosen = np.isin(closed, victims)
+        gc_runs.append((valid[chosen], valid[~chosen]))
+
+    ftl.gc = recording_gc
+    return gc_runs
+
+
+@pytest.fixture(scope="module")
+def reference_runs():
+    """One reference run per GC order, shared by the tests below: default device, sequential fill + one
+    random drive write, seed 7, with every GC victim selection recorded."""
+    runs = {}
+    for gc_order in GC_ORDERS:
+        np.random.seed(7)
+        ftl = make_ftl(gc_order=gc_order)
+        gc_runs = record_gc_victims(ftl)
+        write_all(ftl, full_disk(1, 16, ftl.page_count_logical))
+        entropy_after_fill = ftl.l2p_entropy
+        write_all(ftl, random_write(1, 16, ftl.page_count_logical, drive_write_chunks(ftl)))
+        runs[gc_order] = SimpleNamespace(ftl=ftl, gc_runs=gc_runs, entropy_after_fill=entropy_after_fill)
+    return runs
+
+
 # --- GC ---
 
 @pytest.mark.parametrize("gc_order", GC_ORDERS)
-def test_gc_orders_keep_mapping_consistent(gc_order):
+def test_gc_orders_keep_mapping_consistent(gc_order, reference_runs):
     """Every GC page order survives a sequential fill plus one random drive write with consistent
     L2P/P2L mappings and valid-page counters, no leaked blocks, and every LBA still mapped."""
-    ftl = make_ftl(gc_order=gc_order)
-    fill_and_overwrite(ftl, drive_write_chunks(ftl))
+    ftl = reference_runs[gc_order].ftl
     ftl.check()
     assert leaked_blocks(ftl) == 0
     assert ftl.utilization == 1.0
 
 
-def test_write_amplification_regression():
-    """Pins the write amplification of a reference run (default device, gc_order="lba", sequential
-    fill + one random drive write, seed 7), so any change to GC behavior is noticed. Update the
-    expected value deliberately when the GC policy changes."""
-    ftl = make_ftl()
-    fill_and_overwrite(ftl, drive_write_chunks(ftl))
-    assert write_amplification(ftl) == pytest.approx(2.9596, abs=1e-4)
+@pytest.mark.parametrize("gc_order", GC_ORDERS)
+def test_gc_victim_selection_is_greedy(gc_order, reference_runs):
+    """Every GC run takes its victims from the closed blocks with the fewest valid pages: no victim holds
+    more valid pages than any closed block that GC left alone. The GC page order must not affect this."""
+    gc_runs = reference_runs[gc_order].gc_runs
+    assert len(gc_runs) > 0
+    for victims, others in gc_runs:
+        assert len(victims) > 0
+        if len(others):
+            assert victims.max() <= others.min()
+
+
+def test_write_amplification_regression(reference_runs):
+    """Pins the write amplification of the gc_order="lba" reference run, so any change to GC behavior is
+    noticed. Update the expected value deliberately when the GC policy changes."""
+    assert write_amplification(reference_runs["lba"].ftl) == pytest.approx(2.9596, abs=1e-4)
+
+
+# --- L2P entropy ---
+
+@pytest.mark.parametrize("gc_order", GC_ORDERS)
+def test_l2p_entropy_after_sequential_fill_is_zero(gc_order, reference_runs):
+    """After a sequential fill every L2P delta is the same, so the table has zero entropy."""
+    assert reference_runs[gc_order].entropy_after_fill == 0.0
+
+
+@pytest.mark.parametrize("gc_order", GC_ORDERS)
+def test_l2p_entropy_after_random_writes_is_in_range(gc_order, reference_runs):
+    """Random overwrites scatter the mapping: entropy rises above zero but stays below the 16-bit maximum."""
+    assert 0.0 < reference_runs[gc_order].ftl.l2p_entropy < 16.0
+
+
+def test_l2p_entropy_regression(reference_runs):
+    """Pins the L2P entropy of the gc_order="lba" reference run, so any change to GC page placement is
+    noticed. Update the expected value deliberately when the GC policy changes."""
+    assert reference_runs["lba"].ftl.l2p_entropy == pytest.approx(3.0738, abs=1e-4)
+
+
+def test_lba_gc_order_gives_lowest_l2p_entropy(reference_runs):
+    """Relocating pages in LBA order keeps the mapping most sequential: lower L2P entropy than every other
+    GC order."""
+    lba_entropy = reference_runs["lba"].ftl.l2p_entropy
+    for gc_order in GC_ORDERS:
+        if gc_order != "lba":
+            assert lba_entropy < reference_runs[gc_order].ftl.l2p_entropy, gc_order
 
 
 def test_fully_invalid_blocks_are_reclaimed():
@@ -94,6 +180,18 @@ def test_gc_with_few_empty_blocks_does_not_crash():
     assert ftl.write_lba > 67649
     ftl.check()
     assert leaked_blocks(ftl) == 0
+
+
+@pytest.mark.parametrize("hot_pages", [16, 500, 959, 960])
+def test_gc_with_little_valid_data_does_not_crash(hot_pages):
+    """GC works when the drive holds too little valid data to fill its destination blocks.
+
+    Random writes confined to fewer than 961 LBAs on a fresh drive used to crash on the first GC
+    (after 64,513 host writes) with a ValueError, because GC insisted on relocating 15 full blocks."""
+    ftl = make_ftl()
+    write_all(ftl, random_write(1, 16, hot_pages, 9000))
+    assert ftl.write_lba > 64513
+    ftl.check()
 
 
 def test_invalid_gc_order_is_rejected():
