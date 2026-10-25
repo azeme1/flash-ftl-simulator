@@ -29,13 +29,12 @@ logging.basicConfig(level=logging.INFO)
 
 
 def shannon_entropy(data: np.ndarray, bins: int = 256) -> float:
-    """Shannon entropy (bits/symbol) of a 1-D uint8 array."""
+    """Shannon entropy (bits/symbol) of a 1-D array of non-negative ints < bins."""
     if data.size == 0:
         return 0.0
-    counts = np.bincount(data.astype(np.uint8), minlength=bins)
-    p = counts / counts.sum()
-    p = p[p > 0]                       # drop zero-probability symbols
-    return float(-np.sum(p * np.log2(p)))
+    counts = np.bincount(data, minlength=bins)
+    p = counts[counts > 0] / data.size  # drop zero-probability symbols
+    return float(np.sum(p * np.log2(1 / p)))
 
 
 class FTL:
@@ -238,67 +237,11 @@ class FTL:
         logger.info(f"Disk Ussage: {self.utilization}")
 
     def log_entropy(self):
-        b = np.diff(self.L2P.astype(np.uint16)).view(np.uint8)
-
-        # print(f"dtype              : {L2P.dtype}")
-        # print(f"shape / size       : {L2P.shape}  ({L2P.size} entries)")
-
-        # 1) Byte view (little-endian: low byte, high byte)
-        # b = np.ascontiguousarray(L2P.astype(np.uint16)).view(np.uint8)
-        # print(f"byte stream length : {b.size} bytes")
-
-        # 2) Global byte entropy
-        H = shannon_entropy(b)
-        # print(f"Shannon entropy    : {H:.4f} bits/byte")
-        # print(f"Max entropy        : 8.0000 bits/byte")
-        # print(f"Normalized (H/8)   : {H/8:.4f}")
-
-        # 3) Per-position entropy (low byte vs high byte)
-        low  = b[0::2]
-        high = b[1::2]
-        # print(f"Entropy (low  byte): {shannon_entropy(low):.4f} bits/byte")
-        # print(f"Entropy (high byte): {shannon_entropy(high):.4f} bits/byte")
-
-        # 4) Byte histogram highlights
-        counts = np.bincount(b, minlength=256)
-        total  = counts.sum()
-        top = np.argsort(counts)[::-1][:5]
-        # print("Top-5 byte values  :")
-        # for v in top:
-        #     print(f"   0x{v:02X} ({v:3d}) : {counts[v]:>10d}  ({counts[v]/total:6.2%})")
-
-        # 5) Zero-byte fraction and sentinel-byte fraction
-        zero_frac     = counts[0x00] / total
-        sentinel_frac = (counts[0xFF]) / total
-        # print(f"Zero-byte fraction : {zero_frac:.2%}")
-        # print(f"0xFF-byte fraction : {sentinel_frac:.2%}")
-
-        # 6) RLE-style lower bound: only runs of identical bytes matter
-        #    Count run boundaries — a crude proxy for compressibility.
-        if b.size > 0:
-            runs = 1 + int(np.sum(b[1:] != b[:-1]))
-            rle_ratio = runs / b.size
-            # print(f"RLE run count      : {runs}")
-            # print(f"RLE ratio          : {rle_ratio:.4f}   (lower = more compressible)")
-
-        # 7) Theoretical bits saved by entropy coding
-        raw_bits     = b.size * 8
-        entropy_bits = b.size * H
-        # print(f"Raw bits           : {raw_bits}")
-        # print(f"Entropy-coded bits : {entropy_bits:.0f}")
-
-        logger.info(f"Compression ratio  : {entropy_bits / raw_bits:.4f}")
-
-        return {
-            "H": H,
-            "H_norm": H / 8,
-            "H_low": shannon_entropy(low),
-            "H_high": shannon_entropy(high),
-            "zero_frac": zero_frac,
-            "sentinel_frac": sentinel_frac,
-            "rle_ratio": rle_ratio,
-            "compression_ratio": entropy_bits / raw_bits,
-        }
+        """Order-0 entropy of consecutive L2P deltas, in bits per L2P entry."""
+        deltas = np.diff(self.L2P.astype(np.uint16))  # wraps mod 2**16, lossless
+        H = shannon_entropy(deltas, bins=2**16)
+        logger.info(f"L2P entropy: {H:.4f} bits/entry ({H / 16:.4f} of raw)")
+        return H
 
     def to_image(self, repeat_period=5):
         snapshot = self.image_template.copy()
