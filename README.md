@@ -38,12 +38,16 @@ Host writes go to one open block, page by page. Overwriting an LBA marks its old
 
 GC starts when fewer than 16 blocks are empty. Each run:
 
-1. **Victim selection (greedy):** sorts closed blocks by valid page count, fewest first.
-2. **Collection:** takes valid pages from those victims until it has 15 blocks' worth (960 pages). The last victim
-   may be only partly collected.
-3. **Ordering:** arranges the collected pages using the configured **GC order** (below).
-4. **Relocation:** writes them into 15 freshly opened GC blocks and updates L2P and P2L.
-5. **Erase:** erases every victim that no longer holds valid pages.
+1. **Sizing:** plans to fill 15 destination blocks, or fewer if fewer blocks are empty. GC opens its destination
+   blocks before the victims are all freed, so it never asks for more than exist. A run with no empty block at all
+   stops with an "Out of space" error.
+2. **Victim selection (greedy):** sorts closed blocks by valid page count, fewest first.
+3. **Collection:** takes valid pages from those victims until it has filled the planned destination blocks'
+   worth. The last victim may be only partly collected. Victims with no valid pages are erased straight away.
+4. **Ordering:** arranges the collected pages using the configured **GC order** (below).
+5. **Relocation and erase:** writes the pages into freshly opened GC blocks and updates L2P and P2L. Each victim is
+   erased as soon as its last valid page has moved, so the block can be reused immediately, even as a later
+   destination in the same run.
 
 ### GC page orders
 
@@ -66,11 +70,14 @@ Results for a sequential fill plus 3 random drive writes (1–16 page chunks, `n
 
 | `gc_order` | Write amplification | L2P entropy (bits/entry) | Erases per block, mean / std |
 |---|---|---|---|
-| `lba` | **4.490** | **4.13** | 15.85 / 2.82 |
-| `source` | 4.568 | 4.52 | 16.14 / 2.67 |
-| `address` | 4.588 | 4.53 | 16.21 / 2.75 |
-| `block` | 4.588 | 4.53 | 16.21 / 2.75 |
-| `page` | 5.956 | 13.03 | 21.34 / 2.64 |
+| `lba` | **4.490** | **4.17** | 15.85 / 3.19 |
+| `source` | 4.572 | 4.55 | 16.16 / 3.39 |
+| `address` | 4.576 | 4.53 | 16.17 / 3.36 |
+| `block` | 4.576 | 4.53 | 16.17 / 3.36 |
+| `page` | 5.960 | 13.03 | 21.35 / 2.60 |
+
+Victim selection uses an unstable sort, so when blocks tie on valid page count the choice depends on block
+numbering. Changes that only affect which block numbers get reused can therefore shift these numbers slightly.
 
 ## Workloads
 
@@ -148,6 +155,13 @@ Use `VIDEO_FRAME_EVERY = 16` or higher for something watchable.
 .venv/bin/python -m pytest -q
 ```
 
+| File | Covers |
+|---|---|
+| `tests/test_workloads.py` | Workload generators: LBA coverage, bounds, JESD219 size and zone distributions, page-size mapping, argument validation |
+| `tests/test_ftl.py` | GC correctness for every GC order, a write-amplification regression value, reclaiming fully invalid blocks, GC with very few empty blocks, `erase_block_if_possible`, and the invariant checks |
+
+The full suite takes about 30 seconds; `test_gc_with_few_empty_blocks_does_not_crash` accounts for about half.
+
 ## Project layout
 
 ```
@@ -156,7 +170,7 @@ parameters.py       Device geometry and physical address encoding
 workloads.py        Workload generators
 main.py             Simulation scenario
 visualization/      Video renderer
-tests/              Workload tests
+tests/              Workload and FTL tests
 ```
 
 ## License
