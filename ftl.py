@@ -132,7 +132,7 @@ class FTL:
             self.write_lba += 1
             self.write_storage += 1
 
-    def gc(self, clean_blocks=1):
+    def gc(self, clean_blocks=MAX_GC_BLOCKS):
         closed_blocks = np.where(self.block_status == CLOSED_BLOCK)[0]
         for _block_index in closed_blocks:
             # print(_block_index, self.block_valid_pages[_block_index], (self.P2L[_block_index, :] >= 0).sum())
@@ -177,9 +177,9 @@ class FTL:
         # page_order = np.argsort(self.L2P[lba_items])
         # page_order = np.argsort([decode_address(item)[0] for item in self.L2P[lba_items]])
         # page_order = np.argsort([decode_address(item)[1] for item in self.L2P[lba_items]])
-        page_order = page_order.reshape(MAX_GC_BLOCKS, self.pages_per_block)
+        page_order = page_order.reshape(clean_blocks, self.pages_per_block)
 
-        for _block, _order in zip(range(MAX_GC_BLOCKS), page_order):
+        for _block, _order in zip(range(clean_blocks), page_order):
             self.open_gc_block()    
             _block_dst = self.gc_block_index
             for k, i in enumerate(_order):
@@ -297,7 +297,7 @@ class FTL:
             "compression_ratio": entropy_bits / raw_bits,
         }
 
-    def to_image(self):
+    def to_image(self, repeat_period=5):
         snapshot = self.image_template.copy()
 
         snapshot[self.P2L == PAGE_EMPTY, ...] = PAGE_EMPTY_COLOR
@@ -309,7 +309,7 @@ class FTL:
         assert ~np.any(np.isnan(snapshot)), "Color mapping issue"
         assert ~np.any(np.isnan(snapshot < 0))
 
-        snapshot_path = os.path.join(FTL_SNAPSHOT_FOLDER, str(self.image_counter).zfill(3) + ".png")
+        snapshot_path = os.path.join(FTL_SNAPSHOT_FOLDER, str(self.image_counter).zfill(repeat_period) + ".png")
         os.makedirs(os.path.dirname(snapshot_path), exist_ok=True)
         cv2.imwrite(snapshot_path, snapshot.astype(np.uint8))
 
