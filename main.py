@@ -13,6 +13,7 @@ CHUNK_SIZE_MIN = 1
 CHUNK_SIZE_MAX = 16
 RANDOM_DRIVE_WRITES = 7
 LOG_PERIOD_BLOCKS = 32      # log metrics after every N blocks of host writes
+GC_ORDER = "lba"            # one of ftl.GC_ORDERS: source, lba, address, block, page
 VIDEO_PATH = "__dev/ftl.mp4"  # None disables video writing
 VIDEO_FPS = 60
 VIDEO_FRAME_EVERY = 1       # capture a frame after every N page writes (host and GC)
@@ -50,7 +51,7 @@ def run_phase(ftl, video, workload, page_total, description):
 if __name__ == "__main__":
     np.random.seed(7)
 
-    ftl = FTL(config_json)
+    ftl = FTL(config_json, gc_order=GC_ORDER)
     ftl.log_entropy()
 
     page_count = ftl.page_count_logical

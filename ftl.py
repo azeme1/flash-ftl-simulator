@@ -18,6 +18,15 @@ CLOSED_BLOCK = 1
 GC_BLOCK = 2
 MAX_GC_BLOCKS = 15
 
+# Order in which GC writes the collected valid pages into its destination blocks
+GC_ORDERS = (
+    "source",   # as collected: victim blocks (fewest valid pages first), pages in physical order
+    "lba",      # by logical address
+    "address",  # by current physical address
+    "block",    # by source block index
+    "page",     # by page index inside the source block
+)
+
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -33,8 +42,10 @@ def shannon_entropy(data: np.ndarray, bins: int = 256) -> float:
 
 
 class FTL:
-    def __init__(self, config):
+    def __init__(self, config, gc_order="lba"):
+        assert gc_order in GC_ORDERS, f"Unknown gc_order {gc_order!r}, expected one of {GC_ORDERS}"
         self.config = config
+        self.gc_order = gc_order
         self.over_provisioning = 0.07
         self.block_count_total = config["total_blocks"]
         self.pages_per_block = config["pages_per_block"]
@@ -170,11 +181,7 @@ class FTL:
         blocks_src = blocks_src[:pages_to_move]
         pages_dst = pages_dst[:pages_to_move]
 
-        page_order = np.arange(pages_to_move)
-        page_order = np.argsort(lba_items)
-        # page_order = np.argsort(self.L2P[lba_items])
-        # page_order = np.argsort([decode_address(item)[0] for item in self.L2P[lba_items]])
-        # page_order = np.argsort([decode_address(item)[1] for item in self.L2P[lba_items]])
+        page_order = self.gc_page_order(lba_items)
         page_order = page_order.reshape(clean_blocks, self.pages_per_block)
 
         for _block, _order in zip(range(clean_blocks), page_order):
@@ -217,6 +224,18 @@ class FTL:
 
         self.gc_source_blocks = []
         logger.debug("Done GC")
+
+    def gc_page_order(self, lba_items):
+        """Permutation of the collected pages, by the configured gc_order. Stable, so ties keep collection order."""
+        if self.gc_order == "source":
+            return np.arange(len(lba_items))
+        if self.gc_order == "lba":
+            keys = np.asarray(lba_items)
+        else:
+            addresses = self.L2P[lba_items]
+            blocks, pages = decode_address(addresses)
+            keys = {"address": addresses, "block": blocks, "page": pages}[self.gc_order]
+        return np.argsort(keys, kind="stable")
 
     def check(self, l2p=True, p2l=True, valid_pages=True):
         if l2p:
