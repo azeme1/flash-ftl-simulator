@@ -1,7 +1,10 @@
 import numpy as np
 
 import logging
-from parameters import decode_address, encode_address
+from parameters import BLOCK_BITS, PAGE_BITS, decode_address, encode_address
+
+# L2P entropy treats physical addresses as uint16
+assert PAGE_BITS + BLOCK_BITS <= 16, "Physical address does not fit in 16 bits"
 
 
 PAGE_INVALID = -1
