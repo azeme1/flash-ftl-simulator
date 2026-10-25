@@ -9,7 +9,7 @@ BLOCK_MASK = (1 << BLOCK_BITS) - 1 # 0x3FF (binary: 1111111111)
 # SLC Small Block (Legacy)
 SLC_SMALL = {
     "name": "SLC-Small-Block",
-    "page_size": 1024, # Bytes
+    "page_size": 4096, # Bytes; one page is one 4 KB host LBA (JESD219 workloads use this unit)
     "pages_per_block": 2**PAGE_BITS,
     "total_blocks": 2**BLOCK_BITS,       # <-- explicit, not derived
 }
