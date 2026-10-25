@@ -69,7 +69,7 @@ class FTL:
 
         # Visualization section
         self.image_counter = 0
-        self.image_template = np.full((self.block_count_total, self.pages_per_block, 3), np.nan)
+        self.image_template = np.full((self.block_count_total, self.pages_per_block, 3), np.nan, dtype=np.float32)
 
     def open_block(self):
         self.open_block_index = np.where(self.block_status == EMPTY_BLOCK)[0].min()
@@ -224,7 +224,10 @@ class FTL:
         logger.debug("Done Check")
 
     def log_wa(self):
-        wa = self.write_storage / self.write_lba
+        if self.write_lba == 0:
+            wa = 0.0
+        else:
+            wa = self.write_storage / self.write_lba
         logger.info(f"Write Amplification : {wa}")
 
     @property
