@@ -41,7 +41,8 @@ GC starts when fewer than 16 blocks are empty. Each run:
 1. **Sizing:** plans to fill 15 destination blocks, or fewer if fewer blocks are empty. GC opens its destination
    blocks before the victims are all freed, so it never asks for more than exist. A run with no empty block at all
    stops with an "Out of space" error.
-2. **Victim selection (greedy):** sorts closed blocks by valid page count, fewest first.
+2. **Victim selection (greedy):** sorts closed blocks by valid page count, fewest first; blocks with equal
+   counts are taken in block index order.
 3. **Collection:** takes valid pages from those victims until it has filled the planned destination blocks'
    worth. The last victim may be only partly collected. Victims with no valid pages are erased straight away.
 4. **Ordering:** arranges the collected pages using the configured **GC order** (below).
@@ -70,14 +71,11 @@ Results for a sequential fill plus 3 random drive writes (1–16 page chunks, `n
 
 | `gc_order` | Write amplification | L2P entropy (bits/entry) | Erases per block, mean / std |
 |---|---|---|---|
-| `lba` | **4.490** | **4.17** | 15.85 / 3.19 |
-| `source` | 4.572 | 4.55 | 16.16 / 3.39 |
-| `address` | 4.576 | 4.53 | 16.17 / 3.36 |
-| `block` | 4.576 | 4.53 | 16.17 / 3.36 |
-| `page` | 5.960 | 13.03 | 21.35 / 2.60 |
-
-Victim selection uses an unstable sort, so when blocks tie on valid page count the choice depends on block
-numbering. Changes that only affect which block numbers get reused can therefore shift these numbers slightly.
+| `lba` | **4.498** | **4.16** | 15.88 / 3.22 |
+| `source` | 4.584 | 4.54 | 16.20 / 3.47 |
+| `address` | 4.588 | 4.52 | 16.21 / 3.46 |
+| `block` | 4.588 | 4.52 | 16.21 / 3.46 |
+| `page` | 5.971 | 13.07 | 21.40 / 2.72 |
 
 ## Workloads
 

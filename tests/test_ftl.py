@@ -67,7 +67,7 @@ def test_write_amplification_regression():
     expected value deliberately when the GC policy changes."""
     ftl = make_ftl()
     fill_and_overwrite(ftl, drive_write_chunks(ftl))
-    assert write_amplification(ftl) == pytest.approx(2.9284, abs=1e-4)
+    assert write_amplification(ftl) == pytest.approx(2.9596, abs=1e-4)
 
 
 def test_fully_invalid_blocks_are_reclaimed():

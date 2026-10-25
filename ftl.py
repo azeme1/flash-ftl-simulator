@@ -158,7 +158,8 @@ class FTL:
         for _block_index in closed_blocks:
             # print(_block_index, self.block_valid_pages[_block_index], (self.P2L[_block_index, :] >= 0).sum())
             assert (self.P2L[_block_index, :] >= 0).sum() == self.block_valid_pages[_block_index]
-        closed_blocks_indexes = np.argsort(self.block_valid_pages[closed_blocks])
+        # Stable sort: blocks with equal valid page counts are taken in block index order
+        closed_blocks_indexes = np.argsort(self.block_valid_pages[closed_blocks], kind="stable")
         gc_block_indexes = closed_blocks[closed_blocks_indexes]
 
         assert np.all((np.diff(self.block_valid_pages[gc_block_indexes]) >= 0)), "Incorrect sort order"
