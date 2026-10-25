@@ -310,7 +310,7 @@ class FTL:
         snapshot[self.P2L >= 0, ...] = PAGE_LBA_COLOR
 
         assert ~np.any(np.isnan(snapshot)), "Color mapping issue"
-        assert ~np.any(np.isnan(snapshot < 0))
+        assert ~np.any(snapshot < 0), "Color mapping issue"
 
         snapshot_path = os.path.join(FTL_SNAPSHOT_FOLDER, str(self.image_counter).zfill(repeat_period) + ".png")
         os.makedirs(os.path.dirname(snapshot_path), exist_ok=True)
