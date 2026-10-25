@@ -1,3 +1,5 @@
+from contextlib import nullcontext
+
 from ftl import FTL
 import numpy as np
 from tqdm import tqdm
@@ -11,7 +13,7 @@ CHUNK_SIZE_MIN = 1
 CHUNK_SIZE_MAX = 16
 RANDOM_DRIVE_WRITES = 7
 LOG_PERIOD_BLOCKS = 32      # log metrics after every N blocks of host writes
-VIDEO_PATH = "__dev/ftl.mp4"
+VIDEO_PATH = "__dev/ftl.mp4"  # None disables video writing
 VIDEO_FPS = 60
 VIDEO_FRAME_EVERY = 1       # capture a frame after every N page writes (host and GC)
 
@@ -26,7 +28,8 @@ def log_metrics(ftl):
 def run_phase(ftl, video, workload, page_total, description):
     log_period = LOG_PERIOD_BLOCKS * ftl.pages_per_block
     pages_since_log = 0
-    video.phase = description
+    if video is not None:
+        video.phase = description
 
     with logging_redirect_tqdm(), tqdm(total=page_total, desc=description, unit="page") as progress:
         for lba_index, lba_chunk in workload:
@@ -52,9 +55,12 @@ if __name__ == "__main__":
 
     page_count = ftl.page_count_logical
 
-    with FTLVideo(ftl, VIDEO_PATH, fps=VIDEO_FPS, frame_every=VIDEO_FRAME_EVERY) as video:
-        ftl.on_page_write = video.capture
-        video.write_frame()  # initial empty-disk frame
+    video_context = FTLVideo(ftl, VIDEO_PATH, fps=VIDEO_FPS, frame_every=VIDEO_FRAME_EVERY) if VIDEO_PATH else nullcontext()
+
+    with video_context as video:
+        if video is not None:
+            ftl.on_page_write = video.capture
+            video.write_frame()  # initial empty-disk frame
 
         # 1. Fill the whole disk sequentially
         run_phase(ftl, video, full_disk(CHUNK_SIZE_MIN, CHUNK_SIZE_MAX, page_count), page_count, "Sequential fill")
