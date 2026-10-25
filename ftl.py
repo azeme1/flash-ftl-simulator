@@ -110,6 +110,13 @@ class FTL:
         self.block_valid_pages[block_index] = 0
         logger.debug(f"Erase Block {block_index}")
 
+    def erase_block_if_possible(self, block_index):
+        """Erase a closed block once it holds no valid pages. Returns True if the block was erased."""
+        if self.block_valid_pages[block_index] != 0:
+            return False
+        self.erase_block(block_index)
+        return True
+
     def write(self, lba_index, chuck_size):
         for _lba in range(lba_index, lba_index + chuck_size):
             if (self.block_status == EMPTY_BLOCK).sum() < self.min_empty_blocks:
@@ -141,6 +148,12 @@ class FTL:
                 self.on_page_write(self)
 
     def gc(self, clean_blocks=MAX_GC_BLOCKS):
+        # GC opens all destination blocks before it erases any victim, so it cannot use more than are empty
+        empty_blocks = int((self.block_status == EMPTY_BLOCK).sum())
+        clean_blocks = min(clean_blocks, empty_blocks)
+        if clean_blocks == 0:
+            raise RuntimeError("Out of space: no empty block left for GC to relocate into")
+
         closed_blocks = np.where(self.block_status == CLOSED_BLOCK)[0]
         for _block_index in closed_blocks:
             # print(_block_index, self.block_valid_pages[_block_index], (self.P2L[_block_index, :] >= 0).sum())
@@ -161,6 +174,10 @@ class FTL:
         min_gc_block_count = 1 + np.where(np.cumsum(_valid_pages) > pages_to_move)[0].min()
         gc_move_block_list = gc_block_indexes[:min_gc_block_count]
         self.gc_source_blocks = gc_move_block_list
+
+        # Victims without valid pages need no relocation: free them right away
+        for _block_index in gc_move_block_list:
+            self.erase_block_if_possible(_block_index)
 
         lba_items = []
         pages_src = []
@@ -211,16 +228,15 @@ class FTL:
 
                 self.write_storage += 1
 
+                # Free a victim as soon as its last valid page has moved
+                self.erase_block_if_possible(_block_src)
+
                 if self.on_page_write is not None:
                     self.on_page_write(self)
 
             self.block_status[_block_dst] = CLOSED_BLOCK
 
             assert np.all(self.P2L[_block_dst, ...] >= 0)
-
-        for _block in set(blocks_src):
-            if self.block_valid_pages[_block] == 0:
-                self.erase_block(_block)
 
         self.gc_source_blocks = []
         logger.debug("Done GC")

@@ -4,7 +4,7 @@ import os
 import cv2
 import numpy as np
 
-from ftl import EMPTY_BLOCK, GC_BLOCK, PAGE_INVALID, shannon_entropy
+from ftl import CLOSED_BLOCK, EMPTY_BLOCK, GC_BLOCK, PAGE_INVALID, shannon_entropy
 
 
 # Colors are BGR (OpenCV order), dark theme
@@ -164,7 +164,8 @@ class FTLVideo:
         frame[self.grid_y:self.grid_y + grid.shape[0], self.grid_x:self.grid_x + grid.shape[1]] = grid
 
         for block_index in ftl.gc_source_blocks:
-            self.outline_block(frame, block_index, GC_SOURCE_COLOR)
+            if ftl.block_status[block_index] == CLOSED_BLOCK:  # victims are erased as soon as they are emptied
+                self.outline_block(frame, block_index, GC_SOURCE_COLOR)
         if ftl.open_block_index is not None:
             self.outline_block(frame, ftl.open_block_index, OPEN_BLOCK_COLOR)
         if self.gc_active():
