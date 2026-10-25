@@ -13,13 +13,14 @@ RANDOM_DRIVE_WRITES = 7
 LOG_PERIOD_BLOCKS = 32      # log metrics after every N blocks of host writes
 VIDEO_PATH = "__dev/ftl.mp4"
 VIDEO_FPS = 60
-VIDEO_FRAME_EVERY = 1       # capture a frame after every N host page writes
+VIDEO_FRAME_EVERY = 1       # capture a frame after every N page writes (host and GC)
 
 
 def log_metrics(ftl):
     ftl.log_wa()
     ftl.log_entropy()
     ftl.log_utilization()
+    ftl.log_erase_counts()
 
 
 def run_phase(ftl, video, workload, page_total, description):

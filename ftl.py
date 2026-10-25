@@ -50,6 +50,7 @@ class FTL:
 
         self.open_block_index = None
         self.gc_block_index = None
+        self.gc_source_blocks = []  # blocks being collected by the running GC, empty outside GC
         self.page_index = None
 
         self.min_empty_blocks = MAX_GC_BLOCKS + 1
@@ -58,7 +59,7 @@ class FTL:
         self.write_lba = 0
         self.write_storage = 0
 
-        # Visualization hook: called as on_page_write(ftl) after every host page write
+        # Visualization hook: called as on_page_write(ftl) after every host and GC page write
         self.on_page_write = None
 
     def open_block(self):
@@ -145,6 +146,7 @@ class FTL:
         _valid_pages = self.block_valid_pages[gc_block_indexes]
         min_gc_block_count = 1 + np.where(np.cumsum(_valid_pages) > pages_to_move)[0].min()
         gc_move_block_list = gc_block_indexes[:min_gc_block_count]
+        self.gc_source_blocks = gc_move_block_list
 
         lba_items = []
         pages_src = []
@@ -199,6 +201,9 @@ class FTL:
 
                 self.write_storage += 1
 
+                if self.on_page_write is not None:
+                    self.on_page_write(self)
+
             self.block_status[_block_dst] = CLOSED_BLOCK
 
             assert np.all(self.P2L[_block_dst, ...] >= 0)
@@ -207,6 +212,7 @@ class FTL:
             if self.block_valid_pages[_block] == 0:
                 self.erase_block(_block)
 
+        self.gc_source_blocks = []
         logger.debug("Done GC")
 
     def check(self):
@@ -236,3 +242,8 @@ class FTL:
         H = shannon_entropy(deltas, bins=2**16)
         logger.info(f"L2P entropy: {H:.4f} bits/entry ({H / 16:.4f} of raw)")
         return H
+
+    def log_erase_counts(self):
+        counts = self.block_erase_counter
+        logger.info(f"Erase counts: min {counts.min():.0f}, mean {counts.mean():.2f}, "
+                    f"max {counts.max():.0f}, std {counts.std():.2f}")
