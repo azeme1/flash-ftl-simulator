@@ -229,7 +229,7 @@ class FTL:
 
     @property
     def utilization(self):
-        return (self.L2P > 0).mean()
+        return (self.L2P >= 0).mean()
 
     def log_utilization(self):
         logger.info(f"Disk Ussage: {self.utilization}")
