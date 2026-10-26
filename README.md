@@ -17,7 +17,7 @@ as it goes and writing a video to `__dev/ftl.mp4`.
 
 ## Simulated device
 
-The default geometry is `SLC_SMALL` in `parameters.py`:
+The default geometry is `SLC_SMALL` in `ftl/parameters.py`:
 
 | Parameter | Value |
 |---|---|
@@ -50,26 +50,30 @@ destination blocks (default 15). Both are `FTL` parameters, and `clean_blocks` m
    erased as soon as its last valid page has moved, so the block can be reused immediately, even as a later
    destination in the same run.
 
-### GC page orders
+### GC policies
 
-The order in which GC writes the collected pages decides which data ends up together in the new blocks. That
-affects later write amplification and how sequential the L2P table stays. Select it with
-`FTL(config, gc_order=...)`, or `GC_ORDER` in `main.py`:
+A GC policy decides two things: which victims GC takes, and the order in which it writes their valid pages, which
+decides which data ends up together in the new blocks. That affects later write amplification and how sequential the
+L2P table stays. Policies are classes in `ftl/gc_policies.py`; each inherits from `GreedyGC` and overrides only
+the decision it changes. Select one with `FTL(config, gc=...)`, or `GC` in `main.py`:
 
-| `gc_order` | GC writes the collected pages in order of |
-|---|---|
-| `greedy` | baseline, collection order: victim blocks (fewest valid pages first), pages in physical order |
-| `lba` *(default)* | logical address, which keeps neighbouring LBAs together |
-| `address` | current physical address |
-| `block` | source block index |
-| `page` | page index inside the source block, which interleaves pages from all victims |
+| `gc` | Class | Victims | GC writes the collected pages in order of |
+|---|---|---|---|
+| `greedy` | `GreedyGC` | fewest valid pages | baseline, collection order: victim blocks (fewest valid pages first), pages in physical order |
+| `lba` | `LbaGC` | fewest valid pages | logical address, which keeps neighbouring LBAs together |
+| `address` | `AddressGC` | fewest valid pages | current physical address |
+| `block` | `BlockGC` | fewest valid pages | source block index |
+| `page` | `PageGC` | fewest valid pages | page index inside the source block, which interleaves pages from all victims |
+| `locality` *(default)* | `LocalityGC` | fewest valid pages; ties at the cut-off go to blocks whose LBAs neighbour the other victims' LBAs | logical address |
+
+A new policy is one more subclass, registered in `GC_POLICIES`.
 
 Sorting is stable, so pages with equal keys keep their collection order. Because pages are collected in ascending
 page order within each block, `block` currently produces the same order as `address`.
 
 Results for a sequential fill plus 3 random drive writes (1–16 page chunks, `np.random.seed(7)`):
 
-| `gc_order` | Write amplification | L2P entropy (bits/entry) | Erases per block, mean / std |
+| `gc` | Write amplification | L2P entropy (bits/entry) | Erases per block, mean / std |
 |---|---|---|---|
 | `lba` | **4.498** | **4.16** | 15.88 / 3.22 |
 | `greedy` | 4.584 | 4.54 | 16.20 / 3.47 |
@@ -79,14 +83,14 @@ Results for a sequential fill plus 3 random drive writes (1–16 page chunks, `n
 
 ## Workloads
 
-`workloads.py` contains generators that yield `(start_lba, chunk_size)` writes, measured in pages:
+Workloads are classes in `workload/core.py`. Iterating a workload yields `(start_lba, chunk_size)` writes, measured in pages; arguments are checked when it is created, and random values are drawn while iterating, so `np.random.seed` makes runs repeatable. `RandomChunkWorkload` is the shared base of `FullDisk` and `RandomWrite`:
 
 | Workload | Description |
 |---|---|
-| `full_disk(chunk_min, chunk_max, page_count)` | Writes every LBA once, sequentially, in random-sized chunks |
-| `random_write(chunk_min, chunk_max, page_count, chunk_count)` | Random-sized chunks at uniformly random positions |
-| `jesd219_enterprise(page_count, chunk_count, page_size=4096)` | JEDEC JESD219 enterprise endurance workload (below) |
-| `jesd219_client(trace, page_count, page_size=4096)` | Replays `(byte_offset, byte_length)` writes from a JEDEC client trace |
+| `FullDisk(chunk_min, chunk_max, page_count)` | Writes every LBA once, sequentially, in random-sized chunks |
+| `RandomWrite(chunk_min, chunk_max, page_count, chunk_count)` | Random-sized chunks at uniformly random positions |
+| `Jesd219Enterprise(page_count, chunk_count, page_size=4096)` | JEDEC JESD219 enterprise endurance workload (below) |
+| `Jesd219Client(trace, page_count, page_size=4096)` | Replays `(byte_offset, byte_length)` writes from a JEDEC client trace |
 
 ### JESD219 enterprise workload
 
@@ -110,7 +114,7 @@ reference job. The standard itself is available from [JEDEC](https://www.jedec.o
 ### JESD219 client workload
 
 The client workload is defined by JEDEC's trace files (JESD219A_MT master trace and JESD219A_TT test trace,
-free from jedec.org after logging in). `jesd219_client` maps trace records onto pages. There is no parser for the
+free from jedec.org after logging in). `Jesd219Client` maps trace records onto pages. There is no parser for the
 trace file format yet.
 
 ## Metrics
@@ -155,7 +159,7 @@ Use `VIDEO_FRAME_EVERY = 16` or higher for something watchable.
 
 | File | Covers |
 |---|---|
-| `tests/test_workloads.py` | Workload generators: LBA coverage, bounds, JESD219 size and zone distributions, page-size mapping, argument validation |
+| `tests/test_workloads.py` | Workloads: LBA coverage, bounds, JESD219 size and zone distributions, page-size mapping, argument validation |
 | `tests/test_ftl.py` | GC correctness for every GC order, a write-amplification regression value, reclaiming fully invalid blocks, GC with very few empty blocks, `erase_block_if_possible`, and the invariant checks |
 
 The full suite takes about 30 seconds; `test_gc_with_few_empty_blocks_does_not_crash` accounts for about half.
@@ -163,9 +167,10 @@ The full suite takes about 30 seconds; `test_gc_with_few_empty_blocks_does_not_c
 ## Project layout
 
 ```
-ftl.py              FTL core: mapping tables, host writes, GC, metrics, invariant checks
-parameters.py       Device geometry and physical address encoding
-workloads.py        Workload generators
+ftl/core.py         FTL core: mapping tables, host writes, GC, metrics, invariant checks
+ftl/gc_policies.py  GC policies: victim selection and page order
+ftl/parameters.py   Device geometry and physical address encoding
+workload/core.py    Workload classes
 main.py             Simulation scenario
 visualization/      Video renderer
 tests/              Workload and FTL tests

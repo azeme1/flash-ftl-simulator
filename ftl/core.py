@@ -1,7 +1,8 @@
 import numpy as np
 
 import logging
-from parameters import BLOCK_BITS, PAGE_BITS, decode_address, encode_address
+from ftl.parameters import BLOCK_BITS, PAGE_BITS, decode_address, encode_address
+from ftl.gc_policies import GC_POLICIES
 
 # L2P entropy treats physical addresses as uint16
 assert PAGE_BITS + BLOCK_BITS <= 16, "Physical address does not fit in 16 bits"
@@ -19,15 +20,6 @@ GC_BLOCK = 2
 MONITOR_BLOCKS = 16  # GC starts when fewer blocks than this are empty
 CLEAN_BLOCKS = 15    # destination blocks filled by one GC run, strictly fewer than MONITOR_BLOCKS
 
-# Order in which GC writes the collected valid pages into its destination blocks
-GC_ORDERS = (
-    "greedy",   # baseline, as collected: victim blocks (fewest valid pages first), pages in physical order
-    "lba",      # by logical address
-    "address",  # by current physical address
-    "block",    # by source block index
-    "page",     # by page index inside the source block
-)
-
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -43,13 +35,13 @@ def shannon_entropy(data: np.ndarray, bins: int = 256) -> float:
 
 
 class FTL:
-    def __init__(self, config, gc_order="lba", monitor_blocks=MONITOR_BLOCKS, clean_blocks=CLEAN_BLOCKS):
-        assert gc_order in GC_ORDERS, f"Unknown gc_order {gc_order!r}, expected one of {GC_ORDERS}"
+    def __init__(self, config, gc="locality", monitor_blocks=MONITOR_BLOCKS, clean_blocks=CLEAN_BLOCKS):
+        assert gc in GC_POLICIES, f"Unknown gc {gc!r}, expected one of {tuple(GC_POLICIES)}"
         # GC starts with at least monitor_blocks - 1 empty blocks, so it always has room for its destinations
         assert 1 <= clean_blocks < monitor_blocks, \
             f"Need 1 <= clean_blocks < monitor_blocks, got clean_blocks={clean_blocks}, monitor_blocks={monitor_blocks}"
         self.config = config
-        self.gc_order = gc_order
+        self.gc_policy = GC_POLICIES[gc]()
         self.monitor_blocks = monitor_blocks
         self.clean_blocks = clean_blocks
         self.over_provisioning = 0.07
@@ -174,7 +166,7 @@ class FTL:
 
         # Victims: the clean_blocks greedy blocks among the monitor_blocks candidates. All their valid pages
         # are copied; they fit, because GC starts with at least clean_blocks empty blocks
-        gc_move_block_list = gc_block_indexes[:self.monitor_blocks][:clean_blocks]
+        gc_move_block_list = self.gc_policy.select_victims(self, gc_block_indexes[:self.monitor_blocks], clean_blocks)
         self.gc_source_blocks = gc_move_block_list
 
         # Victims without valid pages need no relocation: free them right away
@@ -194,7 +186,7 @@ class FTL:
         pages_dst = np.arange(self.pages_per_block)
 
         # Precomputed destination order: one chunk of page_order per destination block, the last may be partial
-        page_order = self.gc_page_order(lba_items)
+        page_order = self.gc_policy.page_order(self, lba_items)
         page_order = [page_order[s:s + self.pages_per_block] for s in range(0, len(page_order), self.pages_per_block)]
         assert len(page_order) <= (self.block_status == EMPTY_BLOCK).sum(), "Not enough empty blocks for GC"
 
@@ -237,18 +229,6 @@ class FTL:
 
         self.gc_source_blocks = []
         logger.debug("Done GC")
-
-    def gc_page_order(self, lba_items):
-        """Permutation of the collected pages, by the configured gc_order. Stable, so ties keep collection order."""
-        if self.gc_order == "greedy":
-            return np.arange(len(lba_items))
-        if self.gc_order == "lba":
-            keys = np.asarray(lba_items)
-        else:
-            addresses = self.L2P[lba_items]
-            blocks, pages = decode_address(addresses)
-            keys = {"address": addresses, "block": blocks, "page": pages}[self.gc_order]
-        return np.argsort(keys, kind="stable")
 
     def check(self, l2p=True, p2l=True, valid_pages=True):
         if l2p:

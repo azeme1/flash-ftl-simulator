@@ -4,19 +4,19 @@ from ftl import FTL
 import numpy as np
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
-from parameters import SLC_SMALL as config_json
+from ftl.parameters import SLC_SMALL as config_json
 from visualization import FTLVideo
-from workloads import full_disk, random_write
+from workload import FullDisk, RandomWrite
 
 
 CHUNK_SIZE_MIN = 1
 CHUNK_SIZE_MAX = 16
 RANDOM_DRIVE_WRITES = 7
 LOG_PERIOD_BLOCKS = 32      # log metrics after every N blocks of host writes
-GC_ORDER = "lba"            # one of ftl.GC_ORDERS: greedy, lba, address, block, page
-VIDEO_PATH = "__dev/ftl.mp4"  # None disables video writing
+GC = "locality"             # one of ftl.GC_POLICIES: greedy, lba, address, block, page, locality
+VIDEO_PATH = f"__dev/ftl_{GC}.mp4"  # None disables video writing
 VIDEO_FPS = 60
-VIDEO_FRAME_EVERY = 1       # capture a frame after every N page writes (host and GC)
+VIDEO_FRAME_EVERY = 16      # capture a frame after every N page writes (host and GC)
 
 
 def log_metrics(ftl):
@@ -51,7 +51,7 @@ def run_phase(ftl, video, workload, page_total, description):
 if __name__ == "__main__":
     np.random.seed(7)
 
-    ftl = FTL(config_json, gc_order=GC_ORDER)
+    ftl = FTL(config_json, gc=GC)
     ftl.log_entropy()
 
     page_count = ftl.page_count_logical
@@ -64,13 +64,13 @@ if __name__ == "__main__":
             video.write_frame()  # initial empty-disk frame
 
         # 1. Fill the whole disk sequentially
-        run_phase(ftl, video, full_disk(CHUNK_SIZE_MIN, CHUNK_SIZE_MAX, page_count), page_count, "Sequential fill")
+        run_phase(ftl, video, FullDisk(CHUNK_SIZE_MIN, CHUNK_SIZE_MAX, page_count), page_count, "Sequential fill")
 
         # 2. Random overwrites, one disk's worth of pages per pass
         mean_chunk = (CHUNK_SIZE_MIN + CHUNK_SIZE_MAX) / 2
         chunk_count = round(page_count / mean_chunk)
         for drive_write in range(1, RANDOM_DRIVE_WRITES + 1):
-            workload = random_write(CHUNK_SIZE_MIN, CHUNK_SIZE_MAX, page_count, chunk_count)
+            workload = RandomWrite(CHUNK_SIZE_MIN, CHUNK_SIZE_MAX, page_count, chunk_count)
             run_phase(ftl, video, workload, round(chunk_count * mean_chunk),
                       f"Random write {drive_write}/{RANDOM_DRIVE_WRITES}")
 
