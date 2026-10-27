@@ -6,39 +6,48 @@ import numpy as np
 
 from ftl.parameters import decode_address
 
+MONITOR_BLOCKS = 8  # GC starts when fewer blocks than this are empty
+CLEAN_BLOCKS = 7    # destination blocks filled by one GC run, strictly fewer than MONITOR_BLOCKS
 
-class GreedyGC:
-    """Baseline: the clean_blocks candidates with the fewest valid pages (ties by block index); pages copied
-    as collected: victim by victim (fewest valid pages first), pages in physical order."""
-    name = "greedy"
 
-    def __init__(self):
-        self.empty_blocks_threshold = 1 + 1 # Open block + GC block
-
-    def select_victims(self, ftl, candidates, clean_blocks):
-        """Victims among the candidates, which are sorted by valid page count, fewest first."""
-        return candidates[:clean_blocks]
-
-    def page_order(self, ftl, lba_items):
-        """Permutation of the collected pages giving the order in which they are written."""
-        return np.arange(len(lba_items))
+class BaseGC:
 
     def need_gc(self, ftl):
         """Whether GC is needed (i.e., whether there are any clean blocks)."""
         return (ftl.block_status == -1).sum() < self.empty_blocks_threshold 
 
 
+class GreedyGC(BaseGC):
+    """Baseline: the clean_blocks candidates with the fewest valid pages (ties by block index); pages copied
+    as collected: victim by victim (fewest valid pages first), pages in physical order."""
+    name = "greedy"
+
+    def __init__(self):
+        self.clean_blocks = 1
+        self.empty_blocks_threshold = 1 + 1 # Open block + GC block
+
+    def move_order(self, ftl, lba_items):
+        """Permutation of the collected pages giving the order in which they are written."""
+        return np.arange(len(lba_items))
+
+
 class SortedGC(GreedyGC):
     """Greedy victims; pages written sorted by a key (stable, so ties keep collection order)."""
+
+    def __init__(self):
+        super().__init__()
+        self.clean_blocks = CLEAN_BLOCKS
+        self.empty_blocks_threshold = CLEAN_BLOCKS + 2 # Open block + GC number of blocks
 
     def sort_keys(self, ftl, lba_items):
         raise NotImplementedError
 
-    def page_order(self, ftl, lba_items):
+    def move_order(self, ftl, lba_items):
         return np.argsort(self.sort_keys(ftl, lba_items), kind="stable")
 
 
 class LbaGC(SortedGC):
+
     """Pages written in logical address order."""
     name = "lba"
 

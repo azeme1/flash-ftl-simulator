@@ -17,7 +17,7 @@ EMPTY_BLOCK = -1
 OPENED_BLOCK = 0
 CLOSED_BLOCK = 1
 GC_BLOCK = 2
-WA_WINDOW_BLOCKS = 16  # write_lba and write_storage restart every N blocks of host writes (windowed WA)
+WA_WINDOW_BLOCKS = 32  # write_lba and write_storage restart every N blocks of host writes (windowed WA)
 
 
 logger = logging.getLogger(__name__)
@@ -195,6 +195,13 @@ class FTL:
             lba_items_amount += block_content[_selection].tolist()
             pages_src_amount += np.where(_selection)[0].tolist()
             blocks_src_amount += [_block_index] * sum(_selection)
+
+        # Need to sort the items to be moved according to the GC policy, 
+        # which may be different from the order in which they were collected
+        move_order = self.gc_policy.move_order(self, lba_items_amount)
+        lba_items_amount = np.asarray(lba_items_amount)[move_order]
+        pages_src_amount = np.asarray(pages_src_amount)[move_order]
+        blocks_src_amount = np.asarray(blocks_src_amount)[move_order]
 
         assert len(pages_src_amount) >= self.gc_policy.clean_blocks * self.pages_per_block, "Not enough pages to fill a destination blocks"
 
