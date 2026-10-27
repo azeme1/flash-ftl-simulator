@@ -48,6 +48,15 @@ class FullDisk(RandomChunkWorkload):
             start_lba += chunk_size
 
 
+class FullDiskRandom(FullDisk):
+    """Writes every LBA once, in the same random-sized chunks as FullDisk, but in random chunk order."""
+
+    def __iter__(self):
+        chunks = list(super().__iter__())
+        for i in np.random.permutation(len(chunks)):
+            yield chunks[i]
+
+
 class RandomWrite(RandomChunkWorkload):
     """chunk_count random-sized chunks at uniformly random positions inside the device."""
 

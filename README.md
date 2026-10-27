@@ -88,6 +88,7 @@ Workloads are classes in `workload/core.py`. Iterating a workload yields `(start
 | Workload | Description |
 |---|---|
 | `FullDisk(chunk_min, chunk_max, page_count)` | Writes every LBA once, sequentially, in random-sized chunks |
+| `FullDiskRandom(chunk_min, chunk_max, page_count)` | Writes every LBA once, in the same random-sized chunks as `FullDisk`, but in random chunk order |
 | `RandomWrite(chunk_min, chunk_max, page_count, chunk_count)` | Random-sized chunks at uniformly random positions |
 | `Jesd219Enterprise(page_count, chunk_count, page_size=4096)` | JEDEC JESD219 enterprise endurance workload (below) |
 | `Jesd219Client(trace, page_count, page_size=4096)` | Replays `(byte_offset, byte_length)` writes from a JEDEC client trace |

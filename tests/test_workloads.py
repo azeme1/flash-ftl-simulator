@@ -4,6 +4,7 @@ import pytest
 from workload import (
     JESD219_ENTERPRISE_SIZES,
     FullDisk,
+    FullDiskRandom,
     Jesd219Client,
     Jesd219Enterprise,
     RandomWrite,
@@ -49,6 +50,33 @@ def test_full_disk_chunk_sizes_within_bounds():
 def test_full_disk_rejects_invalid_arguments(args):
     with pytest.raises(AssertionError):
         list(FullDisk(*args))
+
+
+# --- full_disk_random ---
+
+@pytest.mark.parametrize("chunk_min, chunk_max, page_count", [
+    (1, 16, 1000),
+    (4, 4, 10),
+    (1, 1, 5),
+    (3, 50, 50),
+])
+def test_full_disk_random_writes_every_lba_exactly_once(chunk_min, chunk_max, page_count):
+    chunks = list(FullDiskRandom(chunk_min, chunk_max, page_count))
+    assert sorted(expand(chunks)) == list(range(page_count))
+
+
+def test_full_disk_random_uses_the_full_disk_chunks_in_random_order():
+    sequential = list(FullDisk(1, 16, 10000))
+    np.random.seed(7)
+    shuffled = list(FullDiskRandom(1, 16, 10000))
+    assert sorted(shuffled) == sequential   # the same chunks
+    assert shuffled != sequential           # in a different order
+
+
+@pytest.mark.parametrize("args", [(0, 4, 10), (5, 4, 10), (1, 11, 10), (1, 4, 0)])
+def test_full_disk_random_rejects_invalid_arguments(args):
+    with pytest.raises(AssertionError):
+        list(FullDiskRandom(*args))
 
 
 # --- random_write ---
