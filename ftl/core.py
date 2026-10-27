@@ -2,7 +2,7 @@ import numpy as np
 
 import logging
 from ftl.parameters import BLOCK_BITS, PAGE_BITS, decode_address, encode_address
-from ftl.gc_policies import GC_POLICIES
+from ftl.gc_policies import CLEAN_BLOCKS, GC_POLICIES, MONITOR_BLOCKS
 
 # L2P entropy treats physical addresses as uint16
 assert PAGE_BITS + BLOCK_BITS <= 16, "Physical address does not fit in 16 bits"
@@ -17,8 +17,6 @@ EMPTY_BLOCK = -1
 OPENED_BLOCK = 0
 CLOSED_BLOCK = 1
 GC_BLOCK = 2
-MONITOR_BLOCKS = 16  # GC starts when fewer blocks than this are empty
-CLEAN_BLOCKS = 15    # destination blocks filled by one GC run, strictly fewer than MONITOR_BLOCKS
 WA_WINDOW_BLOCKS = 16  # write_lba and write_storage restart every N blocks of host writes (windowed WA)
 
 
@@ -83,7 +81,7 @@ class FTL:
         selection = (self.block_status == EMPTY_BLOCK) & (self.block_status != GC_BLOCK) & (self.block_status != OPENED_BLOCK)
         self.gc_block_index = np.where(selection)[0].min()
         self.block_status[self.gc_block_index] = GC_BLOCK
-        logger.debug(f"Open GC Block {self.gc_block_index}")        
+        logger.debug(f"Open GC Block {self.gc_block_index}")
 
     def close_block(self):
         if self.open_block_index is not None:
@@ -172,7 +170,7 @@ class FTL:
         assert np.all((np.diff(self.block_valid_pages[gc_block_indexes]) >= 0)), "Incorrect sort order"
 
         gc_block_pages = self.block_valid_pages[gc_block_indexes]
-        cutout = np.argwhere(np.cumsum(gc_block_pages) > gc_block_pages)[0].item() + 1
+        cutout = np.argwhere(np.cumsum(gc_block_pages) > self.gc_policy.clean_blocks * self.pages_per_block)[0].item() + 1
 
         self.gc_source_blocks = gc_block_indexes[:cutout]
         
@@ -188,60 +186,62 @@ class FTL:
             return
 
         # Compute source and target items for the relocation
-        lba_items = []
-        pages_src = []
-        blocks_src = []
+        lba_items_amount = []
+        pages_src_amount = []
+        blocks_src_amount = []
         for _block_index in self.gc_source_blocks:
             block_content = self.P2L[_block_index, :]
             _selection = block_content >= 0
-            lba_items += block_content[_selection].tolist()
-            pages_src += np.where(_selection)[0].tolist()
-            blocks_src += [_block_index] * sum(_selection)
+            lba_items_amount += block_content[_selection].tolist()
+            pages_src_amount += np.where(_selection)[0].tolist()
+            blocks_src_amount += [_block_index] * sum(_selection)
 
-        pages_dst = np.arange(self.pages_per_block)
-        assert len(pages_dst) >= self.pages_per_block, "Not enough pages to fill a destination block"
+        assert len(pages_src_amount) >= self.gc_policy.clean_blocks * self.pages_per_block, "Not enough pages to fill a destination blocks"
 
-        # Limit items to to single block
-        pages_dst = pages_dst[:self.pages_per_block]
-        lba_items = lba_items[:self.pages_per_block]
-        blocks_src = blocks_src[:self.pages_per_block]
+        for i in range(self.gc_policy.clean_blocks):
+            # Limit items to to number of blocks
+            slice_item = slice(i * self.pages_per_block, (i + 1) * self.pages_per_block)
+            lba_items = lba_items_amount[slice_item]
+            pages_src = pages_src_amount[slice_item]
+            blocks_src = blocks_src_amount[slice_item]
+            pages_dst = np.arange(self.pages_per_block) 
 
-        self.open_gc_block()
-        _block_dst = self.gc_block_index
+            self.open_gc_block()
+            _block_dst = self.gc_block_index
 
-        for k in range(len(lba_items)):
-            _lba = lba_items[k]
-            _page_src = pages_src[k]
-            _block_src = blocks_src[k]
-            _page_dst = pages_dst[k]
+            for k in range(len(lba_items)):
+                _lba = lba_items[k]
+                _page_src = pages_src[k]
+                _block_src = blocks_src[k]
+                _page_dst = pages_dst[k]
 
-            address_physical_dst = encode_address(_block_dst, _page_dst)
-            address_physical_src = self.L2P[_lba]
-            self.L2P[_lba] = address_physical_dst
+                address_physical_dst = encode_address(_block_dst, _page_dst)
+                address_physical_src = self.L2P[_lba]
+                self.L2P[_lba] = address_physical_dst
 
-            _block_src_check, _page_src_check = decode_address(address_physical_src)
-            assert (_block_src, _page_src) == (_block_src_check, _page_src_check), "Wrong storage content"
+                _block_src_check, _page_src_check = decode_address(address_physical_src)
+                assert (_block_src, _page_src) == (_block_src_check, _page_src_check), "Wrong storage content"
 
-            self.P2L[_block_src, _page_src] = PAGE_INVALID
-            self.P2L[_block_dst, _page_dst] = _lba
+                self.P2L[_block_src, _page_src] = PAGE_INVALID
+                self.P2L[_block_dst, _page_dst] = _lba
 
-            self.block_valid_pages[_block_src] -= 1
-            self.block_valid_pages[_block_dst] += 1
+                self.block_valid_pages[_block_src] -= 1
+                self.block_valid_pages[_block_dst] += 1
 
-            assert 0 <= self.block_valid_pages[_block_src] <= self.pages_per_block
-            assert 0 <= self.block_valid_pages[_block_dst] <= self.pages_per_block
+                assert 0 <= self.block_valid_pages[_block_src] <= self.pages_per_block
+                assert 0 <= self.block_valid_pages[_block_dst] <= self.pages_per_block
 
-            self.write_storage += 1
+                self.write_storage += 1
 
-            # Free a victim as soon as its last valid page has moved
-            self.erase_block_if_possible(_block_src)
+                # Free a victim as soon as its last valid page has moved
+                self.erase_block_if_possible(_block_src)
 
-            if self.on_page_write is not None:
-                self.on_page_write(self)
+                if self.on_page_write is not None:
+                    self.on_page_write(self)
 
-        self.block_status[_block_dst] = CLOSED_BLOCK
+            self.block_status[_block_dst] = CLOSED_BLOCK
 
-        assert np.all(self.P2L[_block_dst, :len(lba_items)] >= 0)
+            assert np.all(self.P2L[_block_dst, :len(lba_items)] >= 0)
 
         self.gc_source_blocks = []
         logger.debug("Done GC")
