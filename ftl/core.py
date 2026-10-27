@@ -19,6 +19,7 @@ CLOSED_BLOCK = 1
 GC_BLOCK = 2
 MONITOR_BLOCKS = 16  # GC starts when fewer blocks than this are empty
 CLEAN_BLOCKS = 15    # destination blocks filled by one GC run, strictly fewer than MONITOR_BLOCKS
+WA_WINDOW_BLOCKS = 16  # write_lba and write_storage restart every N blocks of host writes (windowed WA)
 
 
 logger = logging.getLogger(__name__)
@@ -120,8 +121,12 @@ class FTL:
         assert 0 <= lba_index and lba_index + chuck_size <= self.page_count_logical, \
             f"Write of LBAs [{lba_index}, {lba_index + chuck_size}) is outside the device (0..{self.page_count_logical - 1})"
         for _lba in range(lba_index, lba_index + chuck_size):
+            # WA is measured per window: both counters restart every WA_WINDOW_BLOCKS blocks of host writes
+            if self.write_lba == WA_WINDOW_BLOCKS * self.pages_per_block:
+                self.write_lba = 0
+                self.write_storage = 0
 
-            # TODO: erase empty blocks if possible 
+            # TODO: erase empty blocks if possible
 
             if self.gc_policy.need_gc(self):
                 self.gc()
