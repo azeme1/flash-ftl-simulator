@@ -73,12 +73,14 @@ class FTL:
         self.on_page_write = None
 
     def open_block(self):
-        self.open_block_index = np.where(self.block_status == EMPTY_BLOCK)[0].min()
+        selection = (self.block_status == EMPTY_BLOCK) & (self.block_status != GC_BLOCK) & (self.block_status != OPENED_BLOCK)
+        self.open_block_index = np.where(selection)[0].min()
         self.block_status[self.open_block_index] = OPENED_BLOCK
         logger.debug(f"Open Block {self.open_block_index}")
 
     def open_gc_block(self):
-        self.gc_block_index = np.where(self.block_status == EMPTY_BLOCK)[0].min()
+        selection = (self.block_status == EMPTY_BLOCK) & (self.block_status != GC_BLOCK) & (self.block_status != OPENED_BLOCK)
+        self.gc_block_index = np.where(selection)[0].min()
         self.block_status[self.gc_block_index] = GC_BLOCK
         logger.debug(f"Open GC Block {self.gc_block_index}")        
 
@@ -118,9 +120,11 @@ class FTL:
         assert 0 <= lba_index and lba_index + chuck_size <= self.page_count_logical, \
             f"Write of LBAs [{lba_index}, {lba_index + chuck_size}) is outside the device (0..{self.page_count_logical - 1})"
         for _lba in range(lba_index, lba_index + chuck_size):
-            if (self.block_status == EMPTY_BLOCK).sum() < self.monitor_blocks:
+
+            # TODO: erase empty blocks if possible 
+
+            if self.gc_policy.need_gc(self):
                 self.gc()
-                # ftl.check()
 
             address_physical = self.new_physical_address()
 
@@ -147,36 +151,42 @@ class FTL:
                 self.on_page_write(self)
 
     def gc(self):
-        clean_blocks = self.clean_blocks
         closed_blocks = np.where(self.block_status == CLOSED_BLOCK)[0]
 
+        # Check that the closed blocks are consistent with the P2L and block_valid_pages
         for _block_index in closed_blocks:
-            # print(_block_index, self.block_valid_pages[_block_index], (self.P2L[_block_index, :] >= 0).sum())
             assert (self.P2L[_block_index, :] >= 0).sum() == self.block_valid_pages[_block_index]
+
         # Stable sort: blocks with equal valid page counts are taken in block index order
         closed_blocks_indexes = np.argsort(self.block_valid_pages[closed_blocks], kind="stable")
         gc_block_indexes = closed_blocks[closed_blocks_indexes]
+        # Skip Open Block and GC Block, which are never victims
+        gc_block_indexes = gc_block_indexes[(gc_block_indexes != self.open_block_index) & (gc_block_indexes != self.gc_block_index)]
 
+        # Check the block and page order of the victims: fewest valid pages first, and pages in physical order within each block
         assert np.all((np.diff(self.block_valid_pages[gc_block_indexes]) >= 0)), "Incorrect sort order"
 
-        # Free block strategy
-        # invalid_pages = self.pages_per_block - self.block_valid_pages[gc_block_indexes]
-        # min_gc_block_count = 1 + np.where(np.cumsum(invalid_pages) > self.pages_per_block)[0].min()
-        # gc_move_block_list = gc_block_indexes[:min_gc_block_count]
+        gc_block_pages = self.block_valid_pages[gc_block_indexes]
+        cutout = np.argwhere(np.cumsum(gc_block_pages) > gc_block_pages)[0].item() + 1
 
-        # Victims: the clean_blocks greedy blocks among the monitor_blocks candidates. All their valid pages
-        # are copied; they fit, because GC starts with at least clean_blocks empty blocks
-        gc_move_block_list = self.gc_policy.select_victims(self, gc_block_indexes[:self.monitor_blocks], clean_blocks)
-        self.gc_source_blocks = gc_move_block_list
+        self.gc_source_blocks = gc_block_indexes[:cutout]
+        
+        assert self.open_block_index not in self.gc_source_blocks, "GC selected the host open block"
+        assert self.gc_block_index not in self.gc_source_blocks, "GC selected the GC open block"
 
         # Victims without valid pages need no relocation: free them right away
-        for _block_index in gc_move_block_list:
+        for _block_index in self.gc_source_blocks:
             self.erase_block_if_possible(_block_index)
 
+        if not self.gc_policy.need_gc(self):
+            # all victims were empty, nothing to do
+            return
+
+        # Compute source and target items for the relocation
         lba_items = []
         pages_src = []
         blocks_src = []
-        for _block_index in gc_move_block_list:
+        for _block_index in self.gc_source_blocks:
             block_content = self.P2L[_block_index, :]
             _selection = block_content >= 0
             lba_items += block_content[_selection].tolist()
@@ -184,48 +194,49 @@ class FTL:
             blocks_src += [_block_index] * sum(_selection)
 
         pages_dst = np.arange(self.pages_per_block)
+        assert len(pages_dst) >= self.pages_per_block, "Not enough pages to fill a destination block"
 
-        # Precomputed destination order: one chunk of page_order per destination block, the last may be partial
-        page_order = self.gc_policy.page_order(self, lba_items)
-        page_order = [page_order[s:s + self.pages_per_block] for s in range(0, len(page_order), self.pages_per_block)]
-        assert len(page_order) <= (self.block_status == EMPTY_BLOCK).sum(), "Not enough empty blocks for GC"
+        # Limit items to to single block
+        pages_dst = pages_dst[:self.pages_per_block]
+        lba_items = lba_items[:self.pages_per_block]
+        blocks_src = blocks_src[:self.pages_per_block]
 
-        for _order in page_order:
-            self.open_gc_block()    
-            _block_dst = self.gc_block_index
-            for k, i in enumerate(_order):
-                _lba = lba_items[i]
-                _page_src = pages_src[i]
-                _block_src = blocks_src[i]
-                _page_dst = pages_dst[k]
+        self.open_gc_block()
+        _block_dst = self.gc_block_index
 
-                address_physical_dst = encode_address(_block_dst, _page_dst)
-                address_physical_src = self.L2P[_lba]
-                self.L2P[_lba] = address_physical_dst
+        for k in range(len(lba_items)):
+            _lba = lba_items[k]
+            _page_src = pages_src[k]
+            _block_src = blocks_src[k]
+            _page_dst = pages_dst[k]
 
-                _block_src_check, _page_src_check = decode_address(address_physical_src)
-                assert (_block_src, _page_src) == (_block_src_check, _page_src_check), "Wrong storage content"
+            address_physical_dst = encode_address(_block_dst, _page_dst)
+            address_physical_src = self.L2P[_lba]
+            self.L2P[_lba] = address_physical_dst
 
-                self.P2L[_block_src, _page_src] = PAGE_INVALID
-                self.P2L[_block_dst, _page_dst] = _lba
+            _block_src_check, _page_src_check = decode_address(address_physical_src)
+            assert (_block_src, _page_src) == (_block_src_check, _page_src_check), "Wrong storage content"
 
-                self.block_valid_pages[_block_src] -= 1
-                self.block_valid_pages[_block_dst] += 1
+            self.P2L[_block_src, _page_src] = PAGE_INVALID
+            self.P2L[_block_dst, _page_dst] = _lba
 
-                assert 0 <= self.block_valid_pages[_block_src] <= self.pages_per_block
-                assert 0 <= self.block_valid_pages[_block_dst] <= self.pages_per_block
+            self.block_valid_pages[_block_src] -= 1
+            self.block_valid_pages[_block_dst] += 1
 
-                self.write_storage += 1
+            assert 0 <= self.block_valid_pages[_block_src] <= self.pages_per_block
+            assert 0 <= self.block_valid_pages[_block_dst] <= self.pages_per_block
 
-                # Free a victim as soon as its last valid page has moved
-                self.erase_block_if_possible(_block_src)
+            self.write_storage += 1
 
-                if self.on_page_write is not None:
-                    self.on_page_write(self)
+            # Free a victim as soon as its last valid page has moved
+            self.erase_block_if_possible(_block_src)
 
-            self.block_status[_block_dst] = CLOSED_BLOCK
+            if self.on_page_write is not None:
+                self.on_page_write(self)
 
-            assert np.all(self.P2L[_block_dst, :len(_order)] >= 0)
+        self.block_status[_block_dst] = CLOSED_BLOCK
+
+        assert np.all(self.P2L[_block_dst, :len(lba_items)] >= 0)
 
         self.gc_source_blocks = []
         logger.debug("Done GC")
@@ -269,7 +280,7 @@ class FTL:
         return (self.L2P >= 0).mean()
 
     def log_utilization(self):
-        logger.info(f"Disk Ussage: {self.utilization}")
+        logger.info(f"Disk Usage: {self.utilization}")
 
     @property
     def l2p_entropy(self):

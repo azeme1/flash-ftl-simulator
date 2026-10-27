@@ -12,6 +12,9 @@ class GreedyGC:
     as collected: victim by victim (fewest valid pages first), pages in physical order."""
     name = "greedy"
 
+    def __init__(self):
+        self.empty_blocks_threshold = 1 + 1 # Open block + GC block
+
     def select_victims(self, ftl, candidates, clean_blocks):
         """Victims among the candidates, which are sorted by valid page count, fewest first."""
         return candidates[:clean_blocks]
@@ -19,6 +22,10 @@ class GreedyGC:
     def page_order(self, ftl, lba_items):
         """Permutation of the collected pages giving the order in which they are written."""
         return np.arange(len(lba_items))
+
+    def need_gc(self, ftl):
+        """Whether GC is needed (i.e., whether there are any clean blocks)."""
+        return (ftl.block_status == -1).sum() < self.empty_blocks_threshold 
 
 
 class SortedGC(GreedyGC):
